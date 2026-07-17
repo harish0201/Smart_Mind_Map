@@ -55,7 +55,7 @@ Run the server from the project root. The database path is relative (`mindmap_se
 
 ## Requirements
 
-- Python 3.10+ (the current bytecode naming suggests Python 3.11 is in use)
+- Python 3.10+ 
 - An OpenAI-compatible API endpoint with chat-completions and model-listing support
 - Network access for the browser to load Mind Elixir from `esm.sh`
 
