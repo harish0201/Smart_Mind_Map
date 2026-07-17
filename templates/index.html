@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Mind Map</title>
+    <style>
+        :root {
+            --bg: #ffffff;
+            --card-bg: #f8f9fa;
+            --text: #1e1e2e;
+            --muted: #6c7086;
+            --border: #e0e0e0;
+            --primary: #1e88e5;
+            --accent: #43a047;
+        }
+        .theme-dark {
+            --bg: #1e1e2e;
+            --card-bg: #313244;
+            --text: #cdd6f4;
+            --muted: #a6adc8;
+            --border: #45475a;
+            --primary: #89b4fa;
+            --accent: #a6e3a1;
+        }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: var(--card-bg);
+            border-bottom: 1px solid var(--border);
+            flex-wrap: wrap;
+            z-index: 10;
+        }
+        .btn {
+            padding: 6px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        .btn:hover {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn.primary {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+        .btn.danger {
+            background: #e53935;
+            color: white;
+            border-color: #e53935;
+        }
+        
+        select, input[type="text"] {
+            padding: 6px 10px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            font-size: 13px;
+        }
+        #search-box {
+            width: 150px;
+        }
+        #model-select {
+            max-width: 200px;
+        }
+        
+        .content {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            background: var(--bg);
+        }
+        
+        /* Background belongs only to the Mind Elixir viewport/canvas.
+        Do not style me-wrapper, me-main, or SVG elements: they hold
+        the branch and leaf connector layers. */
+        #map-root {
+            width: 100%;
+            height: 100%;
+            background: var(--bg);
+        }
+
+        #map-root .map-canvas {
+            background-color: var(--bg) !important;
+        }
+        
+        /* Upload Overlay */
+        .upload-overlay {
+            position: absolute;
+            inset: 0;
+            background: var(--bg);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 20;
+        }
+        .upload-box {
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            width: 80%;
+            max-width: 500px;
+        }
+        .upload-box.dragover {
+            border-color: var(--primary);
+            background: rgba(30, 136, 229, 0.05);
+        }
+        textarea {
+            width: 100%;
+            height: 150px;
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--card-bg);
+            color: var(--text);
+            resize: vertical;
+        }
+        
+        .file-input-wrapper {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        /* Q&A Panel */
+        .qa-panel, .qa-summary-panel {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 320px;
+            max-height: 60vh;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+            display: none;
+            z-index: 30;
+            flex-direction: column;
+        }
+        .qa-panel h4, .qa-summary-panel h4 {
+            margin: 0 0 10px 0;
+            font-size: 14px;
+            color: var(--primary);
+        }
+        .qa-panel textarea {
+            height: 60px;
+            margin-bottom: 10px;
+        }
+        .qa-result, .qa-summary-content {
+            background: var(--bg);
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            overflow-y: auto;
+            margin-top: 10px;
+            flex: 1;
+        }
+        .qa-summary-content {
+            white-space: pre-wrap;
+            line-height: 1.5;
+        }
+        .close-btn {
+            position: absolute;
+            top: 10px;
+            right: 12px;
+            cursor: pointer;
+            font-size: 18px;
+            color: var(--muted);
+            background: none;
+            border: none;
+        }
+        
+        /* Hover Expand Button */
+        #hover-expand-btn {
+            position: fixed;
+            display: none;
+            z-index: 1000;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+            font-size: 18px;
+            font-weight: bold;
+            line-height: 22px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            transition: transform 0.1s;
+        }
+        #hover-expand-btn:hover {
+            transform: scale(1.15);
+        }
+
+        /* Loading indicator */
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: var(--muted);
+            font-size: 16px;
+            z-index: 5;
+        }
+
+        /* Search highlight */
+        .search-match {
+            outline: 2px solid var(--primary) !important;
+            background: rgba(30, 136, 229, 0.15) !important;
+            border-radius: 4px;
+        }
+
+        /* Mind Elixir node styling */
+        me-node {
+            background: var(--card-bg) !important;
+            border: 2px solid var(--border) !important;
+        }
+        me-tpc, me-tpc * {
+            color: var(--text) !important;
+            background: transparent !important;
+        }
+        /* Do not override Mind Elixir's inline per-branch path colors. */
+        #map-root me-main path,
+        #map-root me-main line {
+            stroke-width: 2.25px;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            stroke-opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <div class="toolbar">
+        <button class="btn danger" id="btn-new" disabled> New Map</button>
+        <div style="width:1px; height:20px; background:var(--border);"></div>
+        
+        <label for="model-select" style="font-size: 12px; color: var(--muted);">Model:</label>
+        <select id="model-select" disabled><option>Loading models...</option></select>
+        
+        <div style="width:1px; height:20px; background:var(--border);"></div>
+        <button class="btn" id="btn-expand" disabled>＋ Expand All</button>
+        <button class="btn" id="btn-collapse" disabled>－ Collapse All</button>
+        <button class="btn" id="btn-reset" disabled>⊙ Reset</button>
+        
+        <div style="width:1px; height:20px; background:var(--border);"></div>
+        <input type="text" id="search-box" placeholder="🔍 Search nodes..." disabled>
+        
+        <div style="flex:1;"></div>
+        <button class="btn" id="btn-view-qa" disabled>📚 Q&A (<span id="qa-count">0</span>)</button>
+        <button class="btn" id="btn-export-qa" disabled>⤓ Q&A MD</button>
+        <div style="width:1px; height:20px; background:var(--border);"></div>
+        <button class="btn" id="btn-md" disabled>⤓ MD</button>
+        <button class="btn" id="btn-json" disabled>⤓ JSON</button>
+        <button class="btn" id="btn-png" disabled>⤓ PNG</button>
+        <button class="btn" id="btn-svg" disabled>⤓ SVG</button>
+        <button class="btn" id="btn-theme">◑ Theme</button>
+    </div>
+
+    <div class="content">
+        <div id="map-root">
+            <div id="loading">⏳ Loading Mind Map...</div>
+        </div>
+        
+        <!-- Upload Overlay -->
+        <div class="upload-overlay" id="upload-overlay">
+            <div class="upload-box" id="drop-zone">
+                <h2> Smart Mind Map</h2>
+                <p>Drag & drop a file, or use the options below</p>
+                
+                <div class="file-input-wrapper">
+                    <button class="btn primary" id="btn-pick-file">📁 Pick Text/MD</button>
+                    <button class="btn" id="btn-import-json">📥 Import JSON</button>
+                    <input type="file" id="file-input" accept=".txt,.md,.markdown" style="display: none;">
+                    <input type="file" id="json-input" accept=".json" style="display: none;">
+                </div>
+                
+                <textarea id="text-input" placeholder="Paste text/markdown to generate, or paste an exported JSON to restore..."></textarea>
+                
+                <button class="btn primary" id="btn-generate" style="margin-top:15px; width: 100%;">Generate / Restore</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hover Expand Button -->
+    <button id="hover-expand-btn">+</button>
+
+    <!-- Node Q&A Panel -->
+    <div class="qa-panel" id="qa-panel">
+        <button class="close-btn" id="qa-close">✕</button>
+        <h4 id="qa-node-label">Select a node</h4>
+        <textarea id="qa-input" placeholder="Ask a question about this node..."></textarea>
+        <button class="btn primary" id="qa-submit" style="width:100%;">Ask LLM</button>
+        <div class="qa-result" id="qa-result"></div>
+    </div>
+
+    <!-- Global Q&A Summary Panel -->
+    <div class="qa-summary-panel" id="qa-summary-panel">
+        <button class="close-btn" id="qa-summary-close">✕</button>
+        <h4>📚 All Q&A History</h4>
+        <div class="qa-summary-content" id="qa-summary-content">No Q&A recorded yet.</div>
+    </div>
+
+    <script type="module">
+        import MindElixir from "https://esm.sh/mind-elixir@4";
+
+        let mind = null;
+        let sessionId = localStorage.getItem('mindmap_session_id');
+        let currentGraph = null; 
+        let activeNode = null;
+        const qaHistory = {}; 
+        
+        const BRANCH_COLORS = ['#f38ba8', '#fab387', '#f9e2af', '#a6e3a1', '#89dceb', '#89b4fa', '#cba6f7', '#eba0ac'];
+
+        const $ = id => document.getElementById(id);
+        const NL = String.fromCharCode(10);
+
+        function cssVar(name) {
+            return getComputedStyle(document.body).getPropertyValue(name).trim();
+        }
+
+        function buildMindElixirTheme() {
+            const isDark = document.body.classList.contains('theme-dark');
+            return {
+                name: isDark ? 'Dark' : 'Light',
+                type: isDark ? 'dark' : 'light',
+                palette: BRANCH_COLORS,
+                cssVar: {
+                    '--main-color': cssVar('--text'),
+                    '--main-bgcolor': cssVar('--card-bg'),
+                    '--color': cssVar('--text'),
+                    '--bgcolor': cssVar('--bg'),
+                    '--root-color': cssVar('--text'),
+                    '--root-bgcolor': cssVar('--card-bg'),
+                    '--root-border-color': cssVar('--primary'),
+                    '--selected': cssVar('--primary'),
+                    '--panel-color': cssVar('--text'),
+                    '--panel-bgcolor': cssVar('--card-bg'),
+                    '--panel-border-color': cssVar('--border'),
+                },
+            };
+        }
+
+        // ── Error handling ─────────────────────────────────────────────────────
+        window.addEventListener('error', (e) => {
+            console.error('Global error:', e.error);
+            if ($('loading')) {
+                $('loading').textContent = '❌ Error: ' + e.error.message;
+            }
+        });
+
+        // ── Initialization ────────────────────────────────────────────────────
+        async function initApp() {
+            try {
+                await loadModels();
+                if (sessionId) {
+                    try {
+                        const res = await fetch(`/api/session/${sessionId}`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            currentGraph = data.graph;
+                            await renderMap(currentGraph);
+                            $('upload-overlay').style.display = 'none';
+                            enableToolbar();
+                            return;
+                        }
+                    } catch (e) {
+                        console.warn("Failed to restore session:", e);
+                        localStorage.removeItem('mindmap_session_id');
+                        sessionId = null;
+                    }
+                }
+                $('upload-overlay').style.display = 'flex';
+            } catch (err) {
+                console.error('Init error:', err);
+                if ($('loading')) {
+                    $('loading').textContent = '❌ Failed to initialize: ' + err.message;
+                }
+            }
+        }
+
+        async function loadModels() {
+            try {
+                const res = await fetch('/api/models');
+                const data = await res.json();
+                const select = $('model-select');
+                select.innerHTML = '';
+                data.models.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m; opt.textContent = m;
+                    if (m === data.default) opt.selected = true;
+                    select.appendChild(opt);
+                });
+                select.disabled = false;
+            } catch (e) { 
+                console.error("Failed to load models", e); 
+            }
+        }
+
+        $('btn-theme').onclick = () => {
+            document.body.classList.toggle('theme-dark');
+            if (mind) {
+                mind.changeTheme(buildMindElixirTheme());
+                setTimeout(() => mind.toCenter(), 100);
+            }
+        };
+
+        // ── File Handling & JSON Import ────────────────────────────────────────
+        const dropZone = $('drop-zone');
+        const fileInput = $('file-input');
+        const jsonInput = $('json-input');
+
+        $('btn-pick-file').onclick = () => fileInput.click();
+        $('btn-import-json').onclick = () => jsonInput.click();
+        
+        fileInput.onchange = async (e) => { 
+            if (e.target.files[0]) {
+                $('text-input').value = await e.target.files[0].text();
+                e.target.value = ''; 
+            }
+        };
+        
+        jsonInput.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            try {
+                const data = JSON.parse(await file.text());
+                await restoreFromJson(data);
+            } catch (err) { 
+                alert("Invalid JSON format: " + err.message); 
+            } finally {
+                e.target.value = '';
+            }
+        };
+
+        dropZone.ondragover = e => { e.preventDefault(); dropZone.classList.add('dragover'); };
+        dropZone.ondragleave = () => dropZone.classList.remove('dragover');
+        dropZone.ondrop = async e => {
+            e.preventDefault(); dropZone.classList.remove('dragover');
+            const file = e.dataTransfer.files[0];
+            if (file) $('text-input').value = await file.text();
+        };
+
+        // ── Generate / Restore ────────────────────────────────────────────────
+        $('btn-generate').onclick = async () => {
+            const text = $('text-input').value.trim();
+            if (!text) return alert("Please enter text, pick a file, or paste JSON.");
+
+            let isJsonGraph = false;
+            let parsedGraph = null;
+            try {
+                parsedGraph = JSON.parse(text);
+                if (parsedGraph && parsedGraph.nodes && parsedGraph.edges) {
+                    isJsonGraph = true;
+                }
+            } catch (e) {}
+
+            if (isJsonGraph) {
+                await restoreFromJson(parsedGraph);
+                return;
+            }
+
+            const model = $('model-select').value;
+            $('btn-generate').disabled = true; 
+            $('btn-generate').textContent = "⏳ Generating...";
+            if ($('loading')) $('loading').style.display = 'block';
+            
+            try {
+                const res = await fetch('/api/generate', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text, model })
+                });
+                const data = await res.json();
+                sessionId = data.session_id;
+                localStorage.setItem('mindmap_session_id', sessionId);
+                currentGraph = data.graph;
+                await renderMap(currentGraph);
+                $('upload-overlay').style.display = 'none';
+                enableToolbar();
+            } catch (err) { 
+                alert("Error: " + err.message); 
+            } finally { 
+                $('btn-generate').disabled = false; 
+                $('btn-generate').textContent = "Generate / Restore"; 
+            }
+        };
+
+        async function restoreFromJson(graphData) {
+            $('btn-generate').disabled = true; 
+            $('btn-generate').textContent = "⏳ Restoring...";
+            if ($('loading')) $('loading').style.display = 'block';
+            
+            try {
+                const res = await fetch('/api/restore', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ graph: graphData })
+                });
+                const data = await res.json();
+                sessionId = data.session_id;
+                localStorage.setItem('mindmap_session_id', sessionId);
+                currentGraph = data.graph;
+                await renderMap(currentGraph);
+                $('upload-overlay').style.display = 'none';
+                enableToolbar();
+            } catch (err) { 
+                alert("Error restoring JSON: " + err.message); 
+            } finally { 
+                $('btn-generate').disabled = false; 
+                $('btn-generate').textContent = "Generate / Restore"; 
+            }
+        }
+
+        $('btn-new').onclick = () => {
+            if (confirm("Start a new mind map?")) { 
+                localStorage.removeItem('mindmap_session_id'); 
+                location.reload(); 
+            }
+        };
+
+        // ── Mind Elixir Rendering ────────────────────────────────────────────
+        function assignBranchColors(node, inheritedColor = null, isRoot = false) {
+            if (!node) return;
+
+            // Each direct child of the root starts a distinct colored branch.
+            if (isRoot && node.children?.length) {
+                node.children.forEach((child, index) => {
+                    assignBranchColors(
+                        child,
+                        BRANCH_COLORS[index % BRANCH_COLORS.length],
+                        false
+                    );
+                });
+                return;
+            }
+
+            // Carry that root-branch color through every descendant and leaf.
+            if (inheritedColor) {
+                node.branchColor = inheritedColor;
+                node.style = {
+                    ...(node.style || {}),
+                    borderColor: inheritedColor
+                };
+            }
+
+            node.children?.forEach(child => {
+                assignBranchColors(child, inheritedColor, false);
+            });
+        }
+
+        function buildTree(nodes, edges) {
+            const childMap = {};
+            const targeted = new Set();
+            for (const e of edges) {
+                if (!childMap[e.source]) childMap[e.source] = [];
+                childMap[e.source].push(e.target);
+                targeted.add(e.target);
+            }
+            const rootId = Object.keys(nodes).find(id => !targeted.has(id));
+            function build(id) {
+                const n = nodes[id];
+                const children = (childMap[id] || []).map(build).filter(Boolean);
+                return { id, topic: n.label, children };
+            }
+            return rootId ? { nodeData: build(rootId) } : null;
+        }
+
+        async function renderMap(graph) {
+            try {
+                console.log('Rendering map with graph:', graph);
+                
+                if (!graph || !graph.nodes || Object.keys(graph.nodes).length === 0) {
+                    throw new Error('Empty graph data');
+                }
+
+                const tree = buildTree(graph.nodes, graph.edges);
+                if (!tree) {
+                    throw new Error('Failed to build tree structure');
+                }
+                
+                assignBranchColors(tree.nodeData, null, true);
+
+                if (mind) {
+                    mind.refresh(tree);
+                } else {
+                    mind = new MindElixir({
+                        el: '#map-root', 
+                        direction: MindElixir.RIGHT, 
+                        draggable: true,
+                        contextMenu: false, 
+                        toolBar: false, 
+                        nodeMenu: false, 
+                        locale: 'en', 
+                        mainLinkStyle: 2,
+                        theme: buildMindElixirTheme()
+                    });
+                    
+                    mind.init(tree);
+                    
+                    mind.bus.addListener('selectNode', nodeObj => {
+                        if (!nodeObj) return;
+                        activeNode = nodeObj;
+                        $('qa-node-label').textContent = ' ' + nodeObj.topic;
+                        $('qa-panel').style.display = 'flex';
+                    });
+                }
+                
+                setTimeout(() => {
+                    mind.toCenter();
+                    if ($('loading')) $('loading').style.display = 'none';
+                }, 100);
+                
+            } catch (err) {
+                console.error('Render error:', err);
+                if ($('loading')) {
+                    $('loading').textContent = '❌ Render failed: ' + err.message;
+                }
+            }
+        }
+
+        function enableToolbar() {
+            ['btn-expand', 'btn-collapse', 'btn-reset', 'btn-md', 'btn-json', 'btn-png', 'btn-svg', 'search-box', 'btn-new', 'btn-view-qa', 'btn-export-qa'].forEach(id => {
+                const el = $(id); 
+                if (el) el.disabled = false;
+            });
+        }
+
+        // ── Expand/Collapse All ────────────────────────────────────────────────
+        function setAllExpanded(nd, val) {
+            if (!nd) return;
+            if (nd.children && nd.children.length) {
+                nd.expanded = val;
+                nd.children.forEach(c => setAllExpanded(c, val));
+            }
+        }
+        
+        $('btn-expand').onclick = () => { 
+            if (!mind) return;
+            let data = mind.getData(); 
+            setAllExpanded(data.nodeData, true); 
+            mind.refresh(data); 
+            setTimeout(() => mind.toCenter(), 100); 
+        };
+        
+        $('btn-collapse').onclick = () => { 
+            if (!mind) return;
+            let data = mind.getData(); 
+            setAllExpanded(data.nodeData, false); 
+            mind.refresh(data); 
+            setTimeout(() => mind.toCenter(), 100); 
+        };
+        
+        $('btn-reset').onclick = () => {
+            if (mind) mind.toCenter();
+        };
+
+        // ── Hover Expand (+) Button ────────────────────────────────────────────
+        const hoverBtn = $('hover-expand-btn');
+        let hoverNodeId = null;
+        const mapRoot = $('map-root');
+
+        mapRoot.addEventListener('mouseover', (e) => {
+            const tpc = e.target.closest('me-tpc');
+            if (tpc) {
+                const meNode = tpc.closest('me-node') || tpc.parentElement;
+                if (meNode && meNode.id) {
+                    hoverNodeId = meNode.id;
+                    const rect = tpc.getBoundingClientRect();
+                    hoverBtn.style.left = (rect.right + 8) + 'px';
+                    hoverBtn.style.top = (rect.top + rect.height / 2 - 12) + 'px';
+                    hoverBtn.style.display = 'block';
+                }
+            }
+        });
+        
+        mapRoot.addEventListener('mouseout', (e) => {
+            if (!e.relatedTarget || !mapRoot.contains(e.relatedTarget)) {
+                hoverBtn.style.display = 'none';
+                hoverNodeId = null;
+            }
+        });
+        
+        hoverBtn.onclick = async () => {
+            if (hoverNodeId) {
+                await expandNode(hoverNodeId);
+                hoverBtn.style.display = 'none';
+            }
+        };
+
+        async function expandNode(nodeId) {
+            try {
+                const res = await fetch('/api/expand', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId, node_id: nodeId, model: $('model-select').value })
+                });
+                currentGraph = await res.json();
+                await renderMap(currentGraph);
+            } catch (err) { 
+                console.error('Expand error:', err); 
+            }
+        }
+
+        // ── Smart Search ─────────────────────────────────────────────────────
+        $('search-box').oninput = (e) => {
+            const q = e.target.value.toLowerCase().trim();
+            
+            // Clear previous highlights
+            document.querySelectorAll('me-tpc').forEach(el => {
+                el.classList.remove('search-match');
+            });
+
+            // Require at least 2 characters
+            if (!q || q.length < 2 || !mind || !currentGraph) return;
+
+            // Find all matching nodes
+            const matchingIds = new Set();
+            for (const [id, node] of Object.entries(currentGraph.nodes)) {
+                if (node.label.toLowerCase().includes(q)) {
+                    matchingIds.add(id);
+                }
+            }
+
+            if (matchingIds.size === 0) return;
+
+            // Find ancestors to expand
+            const parentMap = {};
+            for (const edge of currentGraph.edges) {
+                parentMap[edge.target] = edge.source;
+            }
+
+            const ancestorsToExpand = new Set();
+            for (const id of matchingIds) {
+                let current = parentMap[id];
+                while (current) {
+                    ancestorsToExpand.add(current);
+                    current = parentMap[current];
+                }
+            }
+
+            // Expand ancestors
+            let data = mind.getData();
+            function expandAncestors(node) {
+                if (!node) return;
+                if (ancestorsToExpand.has(node.id)) {
+                    node.expanded = true;
+                }
+                if (node.children) {
+                    node.children.forEach(expandAncestors);
+                }
+            }
+            expandAncestors(data.nodeData);
+            
+            mind.refresh(data);
+
+            // Highlight matches
+            setTimeout(() => {
+                document.querySelectorAll('me-tpc').forEach(el => {
+                    if (el.textContent.toLowerCase().includes(q)) {
+                        el.classList.add('search-match');
+                    }
+                });
+                mind.toCenter();
+            }, 100);
+        };
+
+        // ── Node Q&A Panel ─────────────────────────────────────────────────────
+        $('qa-close').onclick = () => $('qa-panel').style.display = 'none';
+        
+        $('qa-submit').onclick = async () => {
+            const query = $('qa-input').value.trim();
+            if (!query || !activeNode) return;
+            
+            $('qa-submit').disabled = true; 
+            $('qa-submit').textContent = "⏳ Thinking...";
+            $('qa-result').style.display = 'block'; 
+            $('qa-result').textContent = "Loading...";
+            
+            try {
+                const res = await fetch('/api/query', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        session_id: sessionId, 
+                        node_id: activeNode.id, 
+                        query, 
+                        model: $('model-select').value 
+                    })
+                });
+                const data = await res.json();
+                $('qa-result').textContent = data.answer;
+                
+                if (!qaHistory[activeNode.id]) {
+                    qaHistory[activeNode.id] = { label: activeNode.topic, entries: [] };
+                }
+                qaHistory[activeNode.id].entries.push({ q: query, a: data.answer });
+                updateQaBadge();
+            } catch (err) { 
+                $('qa-result').textContent = "Error: " + err.message; 
+            } finally { 
+                $('qa-submit').disabled = false; 
+                $('qa-submit').textContent = "Ask LLM"; 
+            }
+        };
+
+        // ── Global Q&A Summary & Export ────────────────────────────────────────
+        function updateQaBadge() {
+            const count = Object.values(qaHistory).reduce((sum, node) => sum + node.entries.length, 0);
+            $('qa-count').textContent = count;
+        }
+
+        $('btn-view-qa').onclick = () => {
+            const panel = $('qa-summary-panel');
+            if (panel.style.display === 'flex') { 
+                panel.style.display = 'none'; 
+                return; 
+            }
+            let content = '';
+            for (const [nid, data] of Object.entries(qaHistory)) {
+                content += `📌 ${data.label}\n`;
+                data.entries.forEach((e, i) => { 
+                    content += `  Q${i+1}: ${e.q}\n  A: ${e.a}\n\n`; 
+                });
+                content += '─'.repeat(30) + '\n';
+            }
+            $('qa-summary-content').textContent = content || 'No Q&A recorded yet.';
+            panel.style.display = 'flex';
+        };
+        
+        $('qa-summary-close').onclick = () => $('qa-summary-panel').style.display = 'none';
+
+        $('btn-export-qa').onclick = () => {
+            let md = "# Mind Map Q&A History\n\n";
+            for (const [nid, data] of Object.entries(qaHistory)) {
+                md += `## ${data.label}\n\n`;
+                data.entries.forEach((e, i) => { 
+                    md += `**Q${i+1}:** ${e.q}\n\n**A:** ${e.a}\n\n---\n\n`; 
+                });
+            }
+            downloadBlob(md, 'mindmap-qa.md', 'text/markdown');
+        };
+
+        // ── Export Functions ──────────────────────────────────────────────────
+        $('btn-md').onclick = () => {
+            if (!mind) return;
+            function toMd(n, d) {
+                let s = (d===0 ? '# ' : '  '.repeat(d-1)+'- ') + n.topic + NL;
+                (n.children||[]).forEach(c => s += toMd(c, d+1));
+                return s;
+            }
+            downloadBlob(toMd(mind.getData().nodeData, 0), 'mindmap.md', 'text/markdown');
+        };
+
+        $('btn-json').onclick = () => {
+            if (!currentGraph) return;
+            downloadBlob(JSON.stringify(currentGraph, null, 2), 'mindmap.json', 'application/json');
+        };
+
+        $('btn-svg').onclick = () => {
+            const svg = document.querySelector('#map-root svg');
+            if (!svg) return;
+            const cloned = svg.cloneNode(true);
+            cloned.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+            downloadBlob(new XMLSerializer().serializeToString(cloned), 'mindmap.svg', 'image/svg+xml');
+        };
+
+        $('btn-png').onclick = () => {
+            const svg = document.querySelector('#map-root svg');
+            if (!svg) return;
+            const cloned = svg.cloneNode(true);
+            cloned.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+            const svgData = new XMLSerializer().serializeToString(cloned);
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.width * 2; 
+                canvas.height = img.height * 2;
+                const ctx = canvas.getContext('2d');
+                ctx.scale(2, 2);
+                ctx.fillStyle = document.body.classList.contains('theme-dark') ? '#1e1e2e' : '#ffffff';
+                ctx.fillRect(0, 0, img.width, img.height);
+                ctx.drawImage(img, 0, 0);
+                canvas.toBlob(blob => {
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = 'mindmap.png'; 
+                    a.click();
+                });
+            };
+            img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
+        };
+
+        function downloadBlob(content, filename, type) {
+            const blob = new Blob([content], { type });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename; 
+            a.click();
+        }
+
+        // Start the app
+        initApp();
+    </script>
+</body>
+</html>

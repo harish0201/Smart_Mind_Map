@@ -67,16 +67,6 @@ source .venv/bin/activate        # Windows PowerShell: .venv\Scripts\Activate.ps
 pip install -r requirements.txt
 ```
 
-The Python app imports FastAPI, Uvicorn, Jinja2 support, Pydantic, the OpenAI Python client, and multipart upload support. Ensure `requirements.txt` includes at least:
-
-```text
-fastapi
-uvicorn[standard]
-jinja2
-openai
-python-multipart
-```
-
 ## Configuration
 
 Configuration is supplied through environment variables.
