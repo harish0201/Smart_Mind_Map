@@ -55,7 +55,7 @@ Run the server from the project root. The database path is relative (`mindmap_se
 
 ## Requirements
 
-- Python 3.10+ (the current bytecode naming suggests Python 3.11 is in use)
+- Python 3.10+
 - An OpenAI-compatible API endpoint with chat-completions and model-listing support
 - Network access for the browser to load Mind Elixir from `esm.sh`
 
@@ -130,6 +130,13 @@ Sessions store all nodes and edges plus expanded/hidden-node state. API response
 
 Q&A history is currently maintained in the browser UI; it is not persisted to the SQLite graph session.
 
+## Screenshots of the app
+
+1. Basic mind-map functions, showing search and node expansion for `k-` which matches to `k-means` or `k-fold` etc
+![search and expand node](images/screenshot_1.png)
+
+2. Q&A with an LLM
+![Q&A history panel](images/screenshot_2.png)
 ## Troubleshooting
 
 ### The model selector says “Loading models” or is empty
