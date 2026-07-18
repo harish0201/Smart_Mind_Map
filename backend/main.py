@@ -4,16 +4,17 @@ import json
 import re
 import time
 import sqlite3
+import shutil
 from typing import Optional, List, Dict, Set
 from pathlib import Path
 
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 
-# ── Configuration ──────────────────────────────────────────────────────────────
+# ─ Configuration ──────────────────────────────────────────────────────────────
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-...")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 DEFAULT_LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
@@ -25,15 +26,114 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 llm_client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
 
-# ── SQLite Persistence ─────────────────────────────────────────────────────────
-def _db_init():
+# ─ Phase 0: Schema Versioning & Migrations ────────────────────────────────────
+def _run_migrations():
+    """
+    Lightweight SQLite migration system. 
+    Checks schema_version table and applies incremental updates.
+    """
     con = sqlite3.connect(DB_PATH)
-    con.execute("CREATE TABLE IF NOT EXISTS sessions (session_id TEXT PRIMARY KEY, data TEXT, updated_at REAL)")
+    con.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)")
+    
+    row = con.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").fetchone()
+    current_version = row[0] if row else 0
+
+    if current_version < 1:
+        # 1. Legacy sessions table (Keep for ephemeral map workflow)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY, 
+                data TEXT, 
+                updated_at REAL
+            )
+        """)
+        
+        # 2. Knowledge Base Foundation Tables
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id TEXT PRIMARY KEY, 
+                filename TEXT, 
+                media_type TEXT, 
+                sha256 TEXT, 
+                imported_at REAL, 
+                original_path TEXT, 
+                markdown_text TEXT, 
+                status TEXT, 
+                error TEXT
+            )
+        """)
+        
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS source_chunks (
+                id TEXT PRIMARY KEY, 
+                document_id TEXT, 
+                content TEXT, 
+                chunk_index INTEGER, 
+                page_number INTEGER, 
+                section_title TEXT, 
+                char_start INTEGER, 
+                char_end INTEGER, 
+                embedding TEXT
+            )
+        """)
+        
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS nodes (
+                id TEXT PRIMARY KEY, 
+                title TEXT, 
+                summary TEXT, 
+                notes TEXT, 
+                created_at REAL, 
+                updated_at REAL
+            )
+        """)
+        
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS edges (
+                source_node_id TEXT, 
+                target_node_id TEXT, 
+                relation_type TEXT, 
+                confidence REAL,
+                PRIMARY KEY (source_node_id, target_node_id)
+            )
+        """)
+        
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS node_sources (
+                node_id TEXT, 
+                chunk_id TEXT, 
+                citation_text TEXT, 
+                relevance REAL,
+                PRIMARY KEY (node_id, chunk_id)
+            )
+        """)
+        
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS tags (
+                id TEXT PRIMARY KEY, 
+                name TEXT UNIQUE
+            )
+        """)
+        
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS node_tags (
+                node_id TEXT, 
+                tag_id TEXT,
+                PRIMARY KEY (node_id, tag_id)
+            )
+        """)
+        
+        # Record migration
+        con.execute("INSERT INTO schema_version (version) VALUES (1)")
+        
     con.commit()
     con.close()
 
+# Initialize DB on startup
+_run_migrations()
+
+# ── SQLite Helpers ─────────────────────────────────────────────────────────────
 def _db_save(session_id: str, session: 'GraphSession'):
-    _db_init()
     con = sqlite3.connect(DB_PATH)
     con.execute("INSERT OR REPLACE INTO sessions (session_id, data, updated_at) VALUES (?,?,?)",
                 (session_id, json.dumps(session.to_dict(), ensure_ascii=False), time.time()))
@@ -41,7 +141,6 @@ def _db_save(session_id: str, session: 'GraphSession'):
     con.close()
 
 def _db_load(session_id: str) -> Optional['GraphSession']:
-    _db_init()
     con = sqlite3.connect(DB_PATH)
     row = con.execute("SELECT data FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     con.close()
@@ -50,7 +149,7 @@ def _db_load(session_id: str) -> Optional['GraphSession']:
         except Exception: pass
     return None
 
-# ── Graph Session ──────────────────────────────────────────────────────────────
+# ── Graph Session (Unchanged to preserve JSON workflow) ────────────────────────
 class GraphSession:
     def __init__(self):
         self.nodes: Dict[str, dict] = {}
@@ -137,13 +236,10 @@ Provide a focused, concise answer (3-5 sentences)."""
 # ── Pydantic Models ────────────────────────────────────────────────────────────
 class GenerateRequest(BaseModel): 
     text: str; session_id: Optional[str] = None; model: Optional[str] = None
-
 class ExpandRequest(BaseModel): 
     session_id: str; node_id: str; model: Optional[str] = None
-
 class QueryRequest(BaseModel): 
     session_id: str; node_id: str; query: str; model: Optional[str] = None
-
 class RestoreRequest(BaseModel):
     graph: dict
 
@@ -310,3 +406,40 @@ async def query_node(req: QueryRequest):
         temperature=0.5
     )
     return {"answer": response.choices[0].message.content}
+
+# ── Phase 0: Diagnostic & Backup Endpoints ─────────────────────────────────────
+@app.get("/api/db/version")
+async def get_db_version():
+    """Diagnostic endpoint to check schema version and record counts."""
+    _run_migrations()
+    con = sqlite3.connect(DB_PATH)
+    
+    row = con.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").fetchone()
+    version = row[0] if row else 0
+    
+    tables = ['sessions', 'documents', 'source_chunks', 'nodes', 'edges', 'node_sources', 'tags', 'node_tags']
+    counts = {}
+    for t in tables:
+        try:
+            counts[t] = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+        except Exception:
+            counts[t] = 0
+            
+    con.close()
+    return {"schema_version": version, "record_counts": counts}
+
+@app.get("/api/db/export")
+async def export_db():
+    """Download a backup copy of the SQLite database."""
+    if not os.path.exists(DB_PATH):
+        raise HTTPException(404, "Database not found")
+    
+    # Create a temporary backup to avoid file locking issues during download
+    backup_path = DB_PATH + ".backup"
+    shutil.copy2(DB_PATH, backup_path)
+    
+    return FileResponse(
+        backup_path, 
+        media_type="application/x-sqlite3", 
+        filename="mindmap_knowledge_base.db"
+    )
