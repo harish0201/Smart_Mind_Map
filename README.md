@@ -163,6 +163,10 @@ Export the API keys etc on your terminal, and not in the app if you decide to mo
 
 Happy learning!
 
+## Updates to the tool, and change-logging
+
+I have created an `UPDATES.md` that documents the changes I'll be making to the tool.
+
 ## Acknowledgements
 
 1. esm.sh for the mind-elixir library
