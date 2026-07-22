@@ -19,3 +19,6 @@
 
 - changes to the backend/main.py
 - preparation for provenance tracking
+- wired /api/nodes/{node_id}/sources to fetch data related to section score, relevance, title etc
+- added source tracking for nodes and QA
+- other fixes for CSS

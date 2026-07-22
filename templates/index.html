@@ -193,6 +193,39 @@
             white-space: pre-wrap;
             line-height: 1.5;
         }
+        .source-view-inline {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+            display: none;
+            flex-direction: column;
+        }
+        .source-view-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .source-view-title h4 {
+            margin: 0;
+            font-size: 14px;
+            color: var(--primary);
+        }
+        .source-view-title .source-view-close {
+            cursor: pointer;
+            font-size: 16px;
+            color: var(--muted);
+            background: none;
+            border: none;
+        }
+        .source-view-content {
+            background: var(--bg);
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            overflow-y: auto;
+            margin-top: 10px;
+            max-height: 200px;
+        }
         .close-btn {
             position: absolute;
             top: 10px;
@@ -266,7 +299,7 @@
 </head>
 <body>
     <div class="toolbar">
-        <button class="btn danger" id="btn-new" disabled> New Map</button>
+        <button class="btn danger" id="btn-new" disabled>✕ New Map</button>
         <div style="width:1px; height:20px; background:var(--border);"></div>
         
         <label for="model-select" style="font-size: 12px; color: var(--muted);">Model:</label>
@@ -284,7 +317,7 @@
         <button class="btn" id="btn-view-qa" disabled>📚 Q&A (<span id="qa-count">0</span>)</button>
         <button class="btn" id="btn-export-qa" disabled>⤓ Q&A MD</button>
         <div style="width:1px; height:20px; background:var(--border);"></div>
-        <button class="btn" id="btn-md" disabled>⤓ MD</button>
+        <button class="btn" id="btn-md" disabled> MD</button>
         <button class="btn" id="btn-json" disabled>⤓ JSON</button>
         <button class="btn" id="btn-png" disabled>⤓ PNG</button>
         <button class="btn" id="btn-svg" disabled>⤓ SVG</button>
@@ -296,10 +329,10 @@
             <div id="loading">⏳ Loading Mind Map...</div>
         </div>
         
-        <!-- Upload Overlay -->
-        <div class="upload-overlay" id="upload-overlay">
+        <!-- Upload Overlay - starts hidden -->
+        <div class="upload-overlay" id="upload-overlay" style="display: none;">
             <div class="upload-box" id="drop-zone">
-                <h2> Smart Mind Map</h2>
+                <h2>🧠 Smart Mind Map</h2>
                 <p>Drag & drop a file, or use the options below</p>
                 
                 <div class="file-input-wrapper">
@@ -326,6 +359,14 @@
         <textarea id="qa-input" placeholder="Ask a question about this node..."></textarea>
         <button class="btn primary" id="qa-submit" style="width:100%;">Ask LLM</button>
         <div class="qa-result" id="qa-result"></div>
+        <button class="btn" id="btn-view-source" style="width:100%; margin-top: 10px; display: none;">🔍 View Source Text</button>
+        <div class="source-view-inline" id="source-view-inline" style="display: none;">
+            <div class="source-view-title">
+                <h4>🔍 Source Text</h4>
+                <button class="source-view-close" id="source-view-close">✕</button>
+            </div>
+            <div class="source-view-content" id="source-view-content">No source text available.</div>
+        </div>
     </div>
 
     <!-- Global Q&A Summary Panel -->
@@ -343,6 +384,7 @@
         let currentGraph = null; 
         let activeNode = null;
         const qaHistory = {}; 
+        let activeNodeForSource = null;
         
         const BRANCH_COLORS = ['#f38ba8', '#fab387', '#f9e2af', '#a6e3a1', '#89dceb', '#89b4fa', '#cba6f7', '#eba0ac'];
 
@@ -375,7 +417,7 @@
             };
         }
 
-        // ── Error handling ─────────────────────────────────────────────────────
+        // Global error handler
         window.addEventListener('error', (e) => {
             console.error('Global error:', e.error);
             if ($('loading')) {
@@ -383,7 +425,7 @@
             }
         });
 
-        // ── Initialization ────────────────────────────────────────────────────
+        // ── Initialization ───────────────────────────────────────────────────
         async function initApp() {
             try {
                 await loadModels();
@@ -404,6 +446,7 @@
                         sessionId = null;
                     }
                 }
+                // Show upload overlay if no session
                 $('upload-overlay').style.display = 'flex';
             } catch (err) {
                 console.error('Init error:', err);
@@ -431,6 +474,7 @@
             }
         }
 
+        // Theme toggle with proper canvas update
         $('btn-theme').onclick = () => {
             document.body.classList.toggle('theme-dark');
             if (mind) {
@@ -439,7 +483,7 @@
             }
         };
 
-        // ── File Handling & JSON Import ────────────────────────────────────────
+        // ─ File Handling & JSON Import ────────────────────────────────────────
         const dropZone = $('drop-zone');
         const fileInput = $('file-input');
         const jsonInput = $('json-input');
@@ -450,7 +494,7 @@
         fileInput.onchange = async (e) => { 
             if (e.target.files[0]) {
                 $('text-input').value = await e.target.files[0].text();
-                e.target.value = ''; 
+                e.target.value = '';
             }
         };
         
@@ -476,6 +520,7 @@
         };
 
         // ── Generate / Restore ────────────────────────────────────────────────
+                // ── Generate / Restore ────────────────────────────────────────────────
         $('btn-generate').onclick = async () => {
             const text = $('text-input').value.trim();
             if (!text) return alert("Please enter text, pick a file, or paste JSON.");
@@ -495,14 +540,33 @@
             }
 
             const model = $('model-select').value;
-            $('btn-generate').disabled = true; 
-            $('btn-generate').textContent = "⏳ Generating...";
+            $('btn-generate').disabled = true;
+            $('btn-generate').textContent = " Generating...";
             if ($('loading')) $('loading').style.display = 'block';
-            
+
             try {
+                // --- NEW: Ingest document first to get a document_id for provenance ---
+                let docId = null;
+                try {
+                    const ingestRes = await fetch('/api/documents/upload', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ text: text, filename: "pasted_text.md", media_type: "text/markdown" })
+                    });
+                    if (ingestRes.ok) {
+                        const ingestData = await ingestRes.json();
+                        docId = ingestData.document_id;
+                        console.log("Document ingested for provenance:", docId);
+                    }
+                } catch (e) {
+                    console.warn("Failed to ingest document for provenance, continuing without it.", e);
+                }
+                // --------------------------------------------------------------------------------
+
                 const res = await fetch('/api/generate', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text, model })
+                    // --- NEW: Pass the document_id to the backend ---
+                    body: JSON.stringify({ text, model, document_id: docId })
                 });
                 const data = await res.json();
                 sessionId = data.session_id;
@@ -511,17 +575,17 @@
                 await renderMap(currentGraph);
                 $('upload-overlay').style.display = 'none';
                 enableToolbar();
-            } catch (err) { 
-                alert("Error: " + err.message); 
-            } finally { 
-                $('btn-generate').disabled = false; 
-                $('btn-generate').textContent = "Generate / Restore"; 
+            } catch (err) {
+                alert("Error: " + err.message);
+            } finally {
+                $('btn-generate').disabled = false;
+                $('btn-generate').textContent = "Generate / Restore";
             }
         };
 
         async function restoreFromJson(graphData) {
             $('btn-generate').disabled = true; 
-            $('btn-generate').textContent = "⏳ Restoring...";
+            $('btn-generate').textContent = " Restoring...";
             if ($('loading')) $('loading').style.display = 'block';
             
             try {
@@ -552,33 +616,18 @@
         };
 
         // ── Mind Elixir Rendering ────────────────────────────────────────────
-        function assignBranchColors(node, inheritedColor = null, isRoot = false) {
+        function assignBranchColors(node, isRoot) {
             if (!node) return;
-
-            // Each direct child of the root starts a distinct colored branch.
-            if (isRoot && node.children?.length) {
-                node.children.forEach((child, index) => {
-                    assignBranchColors(
-                        child,
-                        BRANCH_COLORS[index % BRANCH_COLORS.length],
-                        false
-                    );
+            if (isRoot && node.children) {
+                node.children.forEach((child, i) => {
+                    const color = BRANCH_COLORS[i % BRANCH_COLORS.length];
+                    child.branchColor = color;
+                    child.style = { ...child.style, color: color, borderColor: color };
+                    assignBranchColors(child, false);
                 });
-                return;
+            } else if (node.children) {
+                node.children.forEach(c => assignBranchColors(c, false));
             }
-
-            // Carry that root-branch color through every descendant and leaf.
-            if (inheritedColor) {
-                node.branchColor = inheritedColor;
-                node.style = {
-                    ...(node.style || {}),
-                    borderColor: inheritedColor
-                };
-            }
-
-            node.children?.forEach(child => {
-                assignBranchColors(child, inheritedColor, false);
-            });
         }
 
         function buildTree(nodes, edges) {
@@ -611,10 +660,11 @@
                     throw new Error('Failed to build tree structure');
                 }
                 
-                assignBranchColors(tree.nodeData, null, true);
+                assignBranchColors(tree.nodeData, true);
 
                 if (mind) {
                     mind.refresh(tree);
+                    mind.changeTheme(buildMindElixirTheme());
                 } else {
                     mind = new MindElixir({
                         el: '#map-root', 
@@ -633,8 +683,13 @@
                     mind.bus.addListener('selectNode', nodeObj => {
                         if (!nodeObj) return;
                         activeNode = nodeObj;
-                        $('qa-node-label').textContent = ' ' + nodeObj.topic;
+                        $('qa-node-label').textContent = '📌 ' + nodeObj.topic;
                         $('qa-panel').style.display = 'flex';
+                        $('btn-view-source').style.display = 'none';
+                        $('source-view-inline').style.display = 'none';
+                        if (currentGraph && currentGraph.nodes[nodeObj.id]) {
+                            $('btn-view-source').style.display = 'block';
+                        }
                     });
                 }
                 
@@ -734,18 +789,21 @@
         }
 
         // ── Smart Search ─────────────────────────────────────────────────────
+        let searchDebounceTimer = null;
         $('search-box').oninput = (e) => {
-            const q = e.target.value.toLowerCase().trim();
+            clearTimeout(searchDebounceTimer);
+            searchDebounceTimer = setTimeout(() => runSearch(e.target.value), 450);
+        };
+
+        function runSearch(rawValue) {
+            const q = rawValue.toLowerCase().trim();
             
-            // Clear previous highlights
             document.querySelectorAll('me-tpc').forEach(el => {
                 el.classList.remove('search-match');
             });
 
-            // Require at least 2 characters
             if (!q || q.length < 2 || !mind || !currentGraph) return;
 
-            // Find all matching nodes
             const matchingIds = new Set();
             for (const [id, node] of Object.entries(currentGraph.nodes)) {
                 if (node.label.toLowerCase().includes(q)) {
@@ -755,7 +813,6 @@
 
             if (matchingIds.size === 0) return;
 
-            // Find ancestors to expand
             const parentMap = {};
             for (const edge of currentGraph.edges) {
                 parentMap[edge.target] = edge.source;
@@ -770,7 +827,6 @@
                 }
             }
 
-            // Expand ancestors
             let data = mind.getData();
             function expandAncestors(node) {
                 if (!node) return;
@@ -785,7 +841,6 @@
             
             mind.refresh(data);
 
-            // Highlight matches
             setTimeout(() => {
                 document.querySelectorAll('me-tpc').forEach(el => {
                     if (el.textContent.toLowerCase().includes(q)) {
@@ -794,10 +849,10 @@
                 });
                 mind.toCenter();
             }, 100);
-        };
+        }
 
-        // ── Node Q&A Panel ─────────────────────────────────────────────────────
-        $('qa-close').onclick = () => $('qa-panel').style.display = 'none';
+        // ── Node Q&A Panel ────────────────────────────────────────────────────
+        $('qa-close').onclick = () => { $('qa-panel').style.display = 'none'; $('source-view-inline').style.display = 'none'; };
         
         $('qa-submit').onclick = async () => {
             const query = $('qa-input').value.trim();
@@ -832,6 +887,41 @@
                 $('qa-submit').disabled = false; 
                 $('qa-submit').textContent = "Ask LLM"; 
             }
+        };
+
+        // ── View Source Button ──────────────────────────────────────────────
+        $('btn-view-source').onclick = async () => {
+            if (!activeNode) return;
+            
+            try {
+                $('source-view-content').textContent = '🔍 Loading source text...';
+                $('source-view-inline').style.display = 'flex';
+                
+                const res = await fetch(`/api/nodes/${activeNode.id}/sources`);
+                const data = await res.json();
+                
+                if (data.sources && data.sources.length > 0) {
+                    let content = '';
+                    data.sources.forEach(source => {
+                        content += `### Section: ${source.section_title || 'N/A'}\n`;
+                        content += `**Relevance:** ${Math.round(source.relevance * 100)}%\n\n`;
+                        content += `> ${source.citation_text}\n\n`;
+                        content += '---\n\n';
+                    });
+                    
+                    $('source-view-content').innerHTML = content;
+                } else {
+                    $('source-view-content').textContent = 'No source text available for this node.';
+                }
+            } catch (err) {
+                console.error('Source fetch error:', err);
+                $('source-view-content').textContent = 'Error loading source text: ' + err.message;
+            }
+        };
+
+        // ── Source View Panel Close ──────────────────────────────────────────
+        $('source-view-close').onclick = () => {
+            $('source-view-inline').style.display = 'none';
         };
 
         // ── Global Q&A Summary & Export ────────────────────────────────────────
@@ -871,7 +961,7 @@
             downloadBlob(md, 'mindmap-qa.md', 'text/markdown');
         };
 
-        // ── Export Functions ──────────────────────────────────────────────────
+        // ─ Export Functions ──────────────────────────────────────────────────
         $('btn-md').onclick = () => {
             if (!mind) return;
             function toMd(n, d) {
