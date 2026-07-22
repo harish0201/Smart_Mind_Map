@@ -4,11 +4,12 @@ import json
 import re
 import time
 import sqlite3
+import hashlib
 import shutil
 from typing import Optional, List, Dict, Set
 from pathlib import Path
 
-from fastapi import FastAPI, Request, UploadFile, File, HTTPException
+from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Form
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -26,12 +27,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 llm_client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
 
-# ─ Phase 0: Schema Versioning & Migrations ────────────────────────────────────
 def _run_migrations():
-    """
-    Lightweight SQLite migration system. 
-    Checks schema_version table and applies incremental updates.
-    """
     con = sqlite3.connect(DB_PATH)
     con.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)")
     
@@ -39,97 +35,20 @@ def _run_migrations():
     current_version = row[0] if row else 0
 
     if current_version < 1:
-        # 1. Legacy sessions table (Keep for ephemeral map workflow)
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS sessions (
-                session_id TEXT PRIMARY KEY, 
-                data TEXT, 
-                updated_at REAL
-            )
-        """)
+        con.execute("CREATE TABLE IF NOT EXISTS sessions (session_id TEXT PRIMARY KEY, data TEXT, updated_at REAL)")
+        con.execute("CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, filename TEXT, media_type TEXT, sha256 TEXT, imported_at REAL, original_path TEXT, markdown_text TEXT, status TEXT, error TEXT)")
+        con.execute("CREATE TABLE IF NOT EXISTS source_chunks (id TEXT PRIMARY KEY, document_id TEXT, content TEXT, chunk_index INTEGER, page_number INTEGER, section_title TEXT, char_start INTEGER, char_end INTEGER, embedding TEXT)")
+        con.execute("CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, title TEXT, summary TEXT, notes TEXT, created_at REAL, updated_at REAL)")
+        con.execute("CREATE TABLE IF NOT EXISTS edges (source_node_id TEXT, target_node_id TEXT, relation_type TEXT, confidence REAL, PRIMARY KEY (source_node_id, target_node_id))")
+        con.execute("CREATE TABLE IF NOT EXISTS node_sources (node_id TEXT, chunk_id TEXT, citation_text TEXT, relevance REAL, PRIMARY KEY (node_id, chunk_id))")
+        con.execute("CREATE TABLE IF NOT EXISTS tags (id TEXT PRIMARY KEY, name TEXT UNIQUE)")
+        con.execute("CREATE TABLE IF NOT EXISTS node_tags (node_id TEXT, tag_id TEXT, PRIMARY KEY (node_id, tag_id))")
         
-        # 2. Knowledge Base Foundation Tables
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS documents (
-                id TEXT PRIMARY KEY, 
-                filename TEXT, 
-                media_type TEXT, 
-                sha256 TEXT, 
-                imported_at REAL, 
-                original_path TEXT, 
-                markdown_text TEXT, 
-                status TEXT, 
-                error TEXT
-            )
-        """)
-        
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS source_chunks (
-                id TEXT PRIMARY KEY, 
-                document_id TEXT, 
-                content TEXT, 
-                chunk_index INTEGER, 
-                page_number INTEGER, 
-                section_title TEXT, 
-                char_start INTEGER, 
-                char_end INTEGER, 
-                embedding TEXT
-            )
-        """)
-        
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS nodes (
-                id TEXT PRIMARY KEY, 
-                title TEXT, 
-                summary TEXT, 
-                notes TEXT, 
-                created_at REAL, 
-                updated_at REAL
-            )
-        """)
-        
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS edges (
-                source_node_id TEXT, 
-                target_node_id TEXT, 
-                relation_type TEXT, 
-                confidence REAL,
-                PRIMARY KEY (source_node_id, target_node_id)
-            )
-        """)
-        
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS node_sources (
-                node_id TEXT, 
-                chunk_id TEXT, 
-                citation_text TEXT, 
-                relevance REAL,
-                PRIMARY KEY (node_id, chunk_id)
-            )
-        """)
-        
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS tags (
-                id TEXT PRIMARY KEY, 
-                name TEXT UNIQUE
-            )
-        """)
-        
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS node_tags (
-                node_id TEXT, 
-                tag_id TEXT,
-                PRIMARY KEY (node_id, tag_id)
-            )
-        """)
-        
-        # Record migration
         con.execute("INSERT INTO schema_version (version) VALUES (1)")
         
     con.commit()
     con.close()
 
-# Initialize DB on startup
 _run_migrations()
 
 # ── SQLite Helpers ─────────────────────────────────────────────────────────────
@@ -149,7 +68,164 @@ def _db_load(session_id: str) -> Optional['GraphSession']:
         except Exception: pass
     return None
 
-# ── Graph Session (Unchanged to preserve JSON workflow) ────────────────────────
+# ─ Phase 1 & 1.5: Document Ingestion, Chunking & Provenance ───────────────────
+def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[dict]:
+    """Simple, dependency-free chunking algorithm based on Markdown headings."""
+    chunks = []
+    heading_pattern = re.compile(r'^(#{1,6}\s+.+)$', re.MULTILINE)
+    sections = heading_pattern.split(text)
+    
+    current_heading = "Introduction"
+    current_content = sections[0].strip() if sections and sections[0].strip() else ""
+    
+    grouped_sections = []
+    if current_content:
+        grouped_sections.append((current_heading, current_content))
+        
+    for i in range(1, len(sections), 2):
+        if i + 1 < len(sections):
+            heading = sections[i].strip()
+            content = sections[i+1].strip()
+            grouped_sections.append((heading, content))
+            
+    chunk_index = 0
+    for heading, content in grouped_sections:
+        if len(content) <= chunk_size:
+            chunk_content = f"{heading}\n{content}".strip()
+            if chunk_content:
+                chunks.append({
+                    "chunk_index": chunk_index,
+                    "section_title": heading,
+                    "content": chunk_content,
+                    "char_start": 0, "char_end": 0
+                })
+                chunk_index += 1
+        else:
+            paragraphs = content.split('\n\n')
+            current_chunk = ""
+            for para in paragraphs:
+                if len(current_chunk) + len(para) > chunk_size and current_chunk:
+                    full_chunk = f"{heading}\n{current_chunk}".strip()
+                    chunks.append({
+                        "chunk_index": chunk_index,
+                        "section_title": heading,
+                        "content": full_chunk,
+                        "char_start": 0, "char_end": 0
+                    })
+                    chunk_index += 1
+                    current_chunk = para 
+                else:
+                    current_chunk += f"\n\n{para}" if current_chunk else para
+            
+            if current_chunk.strip():
+                full_chunk = f"{heading}\n{current_chunk}".strip()
+                chunks.append({
+                    "chunk_index": chunk_index,
+                    "section_title": heading,
+                    "content": full_chunk,
+                    "char_start": 0, "char_end": 0
+                })
+                chunk_index += 1
+                
+    return chunks
+
+def ingest_document(text: str, filename: str = "pasted_text.md", media_type: str = "text/markdown") -> str:
+    """Ingests text, checks for duplicates via SHA256, chunks it, and saves to DB."""
+    sha256 = hashlib.sha256(text.encode('utf-8')).hexdigest()
+    
+    con = sqlite3.connect(DB_PATH)
+    existing = con.execute("SELECT id FROM documents WHERE sha256 = ?", (sha256,)).fetchone()
+    if existing:
+        con.close()
+        return existing[0]
+        
+    doc_id = str(uuid.uuid4())
+    imported_at = time.time()
+    
+    con.execute("""
+        INSERT INTO documents (id, filename, media_type, sha256, imported_at, markdown_text, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'processed')
+    """, (doc_id, filename, media_type, sha256, imported_at, text))
+    
+    chunks = chunk_text(text)
+    for chunk in chunks:
+        chunk_id = f"{doc_id}_c{chunk['chunk_index']}"
+        con.execute("""
+            INSERT INTO source_chunks (id, document_id, content, chunk_index, section_title, char_start, char_end)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (chunk_id, doc_id, chunk['content'], chunk['chunk_index'], chunk['section_title'], chunk['char_start'], chunk['char_end']))
+        
+    con.commit()
+    con.close()
+    return doc_id
+
+# ── Provenance Linking Helpers ──────────────────────────────────────
+def _calculate_keyword_overlap(text1: str, text2: str) -> float:
+    """Calculates a simple Jaccard similarity score between two texts based on words."""
+    # Basic tokenization: lowercase, split by non-alphanumeric
+    words1 = set(re.findall(r'\b\w+\b', text1.lower()))
+    words2 = set(re.findall(r'\b\w+\b', text2.lower()))
+    
+    # Filter out very short words (stopwords approximation)
+    words1 = {w for w in words1 if len(w) > 2}
+    words2 = {w for w in words2 if len(w) > 2}
+    
+    if not words1 or not words2:
+        return 0.0
+        
+    intersection = words1.intersection(words2)
+    union = words1.union(words2)
+    
+    return len(intersection) / len(union) if union else 0.0
+
+def _link_nodes_to_chunks(session_id: str, document_id: str, threshold: float = 0.15):
+    """
+    Links nodes in a session graph to source chunks based on keyword overlap.
+    """
+    gs = _db_load(session_id)
+    if not gs:
+        return
+        
+    con = sqlite3.connect(DB_PATH)
+    chunks = con.execute("SELECT id, content FROM source_chunks WHERE document_id = ?", (document_id,)).fetchall()
+    con.close()
+    
+    if not chunks:
+        return
+        
+    con = sqlite3.connect(DB_PATH)
+    for node_id, node_data in gs.nodes.items():
+        label = node_data.get("label", "")
+        summary = node_data.get("summary", "")
+        node_text = f"{label} {summary}".strip()
+        
+        if not node_text:
+            continue
+            
+        best_chunk_id = None
+        best_score = 0.0
+        
+        for chunk_id, chunk_content in chunks:
+            score = _calculate_keyword_overlap(node_text, chunk_content)
+            if score > best_score:
+                best_score = score
+                best_chunk_id = chunk_id
+                
+        if best_chunk_id and best_score >= threshold:
+            # citation_text is a snippet of the chunk
+            citation_snippet = chunks[[c[0] for c in chunks].index(best_chunk_id)][1][:100] + "..."
+            try:
+                con.execute("""
+                    INSERT OR REPLACE INTO node_sources (node_id, chunk_id, citation_text, relevance)
+                    VALUES (?, ?, ?, ?)
+                """, (node_id, best_chunk_id, citation_snippet, best_score))
+            except sqlite3.IntegrityError:
+                pass # Already linked
+                
+    con.commit()
+    con.close()
+
+# ── Graph Session  ──────────────────────────────────────────────────
 class GraphSession:
     def __init__(self):
         self.nodes: Dict[str, dict] = {}
@@ -210,7 +286,7 @@ class GraphSession:
         gs.hidden_nodes = set(d.get("hidden_nodes", []))
         return gs
 
-# ── LLM Prompts ────────────────────────────────────────────────────────────────
+# ── LLM Prompts  ────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are a semantic knowledge graph generation assistant. Analyze text and produce structured concept hierarchies.
 Format: Strictly Markdown list format. Use `#` for root, `-` with 2-space indentation for branches.
 Keep node labels concise (3-6 words). Match input language exactly."""
@@ -233,17 +309,21 @@ Node: {node_label} | Summary: {node_summary} | Parent chain: {parent_chain}
 Question: {query}
 Provide a focused, concise answer (3-5 sentences)."""
 
-# ── Pydantic Models ────────────────────────────────────────────────────────────
+# ─ Pydantic Models ───────────────────────────────────────────────────────────
 class GenerateRequest(BaseModel): 
-    text: str; session_id: Optional[str] = None; model: Optional[str] = None
+    text: str; session_id: Optional[str] = None; model: Optional[str] = None; document_id: Optional[str] = None
 class ExpandRequest(BaseModel): 
     session_id: str; node_id: str; model: Optional[str] = None
 class QueryRequest(BaseModel): 
     session_id: str; node_id: str; query: str; model: Optional[str] = None
 class RestoreRequest(BaseModel):
     graph: dict
+class DocumentUploadRequest(BaseModel):
+    text: str
+    filename: Optional[str] = "pasted_text.md"
+    media_type: Optional[str] = "text/markdown"
 
-# ── Helper Functions ───────────────────────────────────────────────────────────
+# ── Helper Functions ───────────────────────────────────────────────
 def parse_markdown_to_session(md_text: str) -> GraphSession:
     gs = GraphSession()
     lines = [l.rstrip() for l in md_text.splitlines() if l.strip()]
@@ -301,7 +381,6 @@ async def get_session(session_id: str):
 
 @app.post("/api/restore")
 async def restore_session(req: RestoreRequest):
-    """Restore a session from an exported JSON file."""
     session_id = str(uuid.uuid4())
     gs = GraphSession.from_dict(req.graph)
     _db_save(session_id, gs)
@@ -317,11 +396,21 @@ async def generate_mindmap(req: GenerateRequest):
     session_id = req.session_id or str(uuid.uuid4())
     target_model = req.model or DEFAULT_LLM_MODEL
     
+    text_to_analyze = req.text
+    if req.document_id:
+        con = sqlite3.connect(DB_PATH)
+        row = con.execute("SELECT markdown_text FROM documents WHERE id = ?", (req.document_id,)).fetchone()
+        con.close()
+        if row:
+            text_to_analyze = row[0]
+        else:
+            raise HTTPException(404, "Document not found")
+
     response = await llm_client.chat.completions.create(
         model=target_model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": USER_PROMPT_GENERATE.format(long_text_content=req.text)}
+            {"role": "user", "content": USER_PROMPT_GENERATE.format(long_text_content=text_to_analyze)}
         ],
         temperature=0.5
     )
@@ -329,6 +418,10 @@ async def generate_mindmap(req: GenerateRequest):
     
     gs = parse_markdown_to_session(md_text)
     _db_save(session_id, gs)
+    
+    # Phase 1.5: If generated from a document, link nodes to chunks
+    if req.document_id:
+        _link_nodes_to_chunks(session_id, req.document_id)
     
     return {"session_id": session_id, "graph": gs.visible_to_dict(), "markdown": md_text}
 
@@ -407,39 +500,77 @@ async def query_node(req: QueryRequest):
     )
     return {"answer": response.choices[0].message.content}
 
-# ── Phase 0: Diagnostic & Backup Endpoints ─────────────────────────────────────
+# ── Phase 0: Diagnostic & Backup Endpoints ─────────────────────────
 @app.get("/api/db/version")
 async def get_db_version():
-    """Diagnostic endpoint to check schema version and record counts."""
     _run_migrations()
     con = sqlite3.connect(DB_PATH)
-    
     row = con.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").fetchone()
     version = row[0] if row else 0
-    
     tables = ['sessions', 'documents', 'source_chunks', 'nodes', 'edges', 'node_sources', 'tags', 'node_tags']
     counts = {}
     for t in tables:
-        try:
-            counts[t] = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        except Exception:
-            counts[t] = 0
-            
+        try: counts[t] = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+        except Exception: counts[t] = 0
     con.close()
     return {"schema_version": version, "record_counts": counts}
 
 @app.get("/api/db/export")
 async def export_db():
-    """Download a backup copy of the SQLite database."""
-    if not os.path.exists(DB_PATH):
-        raise HTTPException(404, "Database not found")
-    
-    # Create a temporary backup to avoid file locking issues during download
+    if not os.path.exists(DB_PATH): raise HTTPException(404, "Database not found")
     backup_path = DB_PATH + ".backup"
     shutil.copy2(DB_PATH, backup_path)
+    return FileResponse(backup_path, media_type="application/x-sqlite3", filename="mindmap_knowledge_base.db")
+
+# ── Phase 1: Document Ingestion Endpoints ──────────────────────────
+@app.post("/api/documents/upload")
+async def upload_document(req: DocumentUploadRequest):
+    try:
+        doc_id = ingest_document(req.text, req.filename, req.media_type)
+        return {"document_id": doc_id, "status": "success"}
+    except Exception as e:
+        raise HTTPException(500, f"Ingestion failed: {str(e)}")
+
+@app.get("/api/documents")
+async def list_documents():
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    rows = con.execute("SELECT id, filename, media_type, imported_at, status FROM documents ORDER BY imported_at DESC").fetchall()
+    con.close()
+    return {"documents": [dict(row) for row in rows]}
+
+@app.get("/api/documents/{doc_id}")
+async def get_document(doc_id: str):
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
     
-    return FileResponse(
-        backup_path, 
-        media_type="application/x-sqlite3", 
-        filename="mindmap_knowledge_base.db"
-    )
+    doc = con.execute("SELECT id, filename, media_type, sha256, imported_at, status FROM documents WHERE id = ?", (doc_id,)).fetchone()
+    if not doc:
+        con.close()
+        raise HTTPException(404, "Document not found")
+        
+    chunks = con.execute("SELECT id, chunk_index, section_title, length(content) as char_count FROM source_chunks WHERE document_id = ? ORDER BY chunk_index", (doc_id,)).fetchall()
+    con.close()
+    
+    return {"document": dict(doc), "chunks": [dict(c) for c in chunks]}
+
+# ── Phase 1.5: Provenance Retrieval Endpoint ───────────────────────────────────
+@app.get("/api/nodes/{node_id}/sources")
+async def get_node_sources(node_id: str):
+    """Retrieve the source chunks linked to a specific node."""
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    
+    # Join node_sources with source_chunks to get the actual content
+    rows = con.execute("""
+        SELECT ns.chunk_id, ns.citation_text, ns.relevance, 
+               sc.content, sc.section_title, sc.chunk_index
+        FROM node_sources ns
+        JOIN source_chunks sc ON ns.chunk_id = sc.id
+        WHERE ns.node_id = ?
+        ORDER BY ns.relevance DESC
+    """, (node_id,)).fetchall()
+    con.close()
+    
+    sources = [dict(row) for row in rows]
+    return {"node_id": node_id, "sources": sources}
